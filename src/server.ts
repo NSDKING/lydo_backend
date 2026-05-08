@@ -17,6 +17,7 @@ app.get('/', (_req, res) => {
   res.status(200).send('Mako Backend Online');
 });
 
+
 app.get('/health', (_req, res) => {
   res.status(200).send('OK');
 });
