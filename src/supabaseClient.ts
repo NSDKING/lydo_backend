@@ -10,45 +10,13 @@ if (!supabaseUrl || !supabaseKey) {
   throw new Error('SUPABASE_URL and SUPABASE_SECRET_KEY must be set in the environment');
 }
 
+// 🚀 Supabase client (NO realtime / websocket)
 export const supabaseAdmin = createClient(supabaseUrl, supabaseKey, {
   auth: {
     persistSession: false,
+    autoRefreshToken: false,
+    detectSessionInUrl: false,
   },
+
+
 });
-
-export async function saveUserData(userId: string, profile: Record<string, any>) {
-  const { error } = await supabaseAdmin
-    .from('users')
-    .upsert({ id: userId, profile }, { onConflict: 'id' })
-    .select();
-
-  if (error) {
-    throw error;
-  }
-
-  return true;
-}
-
-export async function saveLidlPromos(promos: Array<Record<string, any>>) {
-  const { error } = await supabaseAdmin.from('lidl_promos').insert(promos);
-  if (error) {
-    throw error;
-  }
-  return promos;
-}
-
-export async function saveGeneratedMenu(menu: Record<string, any>) {
-  const { data, error } = await supabaseAdmin.from('menus').insert(menu).select();
-  if (error) {
-    throw error;
-  }
-  return data;
-}
-
-export async function saveRecipeAnalysis(recipe: Record<string, any>) {
-  const { data, error } = await supabaseAdmin.from('recipes').insert(recipe).select();
-  if (error) {
-    throw error;
-  }
-  return data;
-}
