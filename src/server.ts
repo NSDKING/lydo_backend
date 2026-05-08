@@ -1,3 +1,5 @@
+import './wsPolyfill.js';
+ 
 import express, { Request, Response } from 'express';
 
 import { handler as menuHandler } from './generateMenu.js';
