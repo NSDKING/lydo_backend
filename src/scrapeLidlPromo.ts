@@ -14,32 +14,15 @@ export interface LidlPromo {
 }
 
 /**
- * Extract products from page
+ * Extract products from page (FAST + STABLE)
  */
 async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
-  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(2500);
-
-  await page.evaluate(async () => {
-    await new Promise<void>((resolve) => {
-      let lastHeight = 0;
-
-      const timer = setInterval(() => {
-        window.scrollTo(0, document.body.scrollHeight);
-
-        const newHeight = document.body.scrollHeight;
-
-        if (newHeight === lastHeight) {
-          clearInterval(timer);
-          resolve();
-        }
-
-        lastHeight = newHeight;
-      }, 800);
-    });
+  await page.goto(url, {
+    waitUntil: 'domcontentloaded', // ⚡ faster than networkidle
+    timeout: 30000,
   });
 
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(2000);
 
   const products = await page.evaluate(() => {
     const cards = Array.from(
@@ -89,20 +72,22 @@ async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
       title: p.title,
       price: p.price,
       available: p.available,
-      image_url: p.image_url,   // ✅ correct DB field
+      image_url: p.image_url,
       supermarket: 'Lidl',
-      source_url: url,          // ✅ correct DB field
+      source_url: url,
     }));
 }
 
 /**
- * MAIN SCRAPER
+ * MAIN SCRAPER (SAFE FOR RAILWAY)
  */
 export async function scrapeLidlPromo(
   catalogueUrl: string,
-  maxPages = 5
+  maxPages = 2 // ⚡ IMPORTANT LIMIT
 ) {
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+    headless: true,
+  });
 
   const allPromos: LidlPromo[] = [];
 
@@ -112,6 +97,7 @@ export async function scrapeLidlPromo(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
     });
 
+    // ⚡ block heavy assets (faster + less memory)
     await page.route('**/*', (route) => {
       const type = route.request().resourceType();
 
@@ -137,6 +123,7 @@ export async function scrapeLidlPromo(
       }
 
       allPromos.push(...promos);
+
       console.log(`Page ${pageNum}: ${promos.length} products`);
     }
   } finally {
@@ -144,37 +131,8 @@ export async function scrapeLidlPromo(
   }
 
   if (allPromos.length > 0) {
-    await saveLidlPromos(allPromos); // ✅ UPSERT FIX APPLIES HERE
+    await saveLidlPromos(allPromos);
   }
 
   return allPromos;
-}
-
-/**
- * API HANDLER
- */
-export async function handler(req: any, res: any) {
-  const url = req.query?.url as string;
-
-  if (!url) {
-    return res.status(400).json({ error: 'Missing url' });
-  }
-
-  try {
-    const pages = req.query?.pages
-      ? parseInt(req.query.pages, 10)
-      : 5;
-
-    const promos = await scrapeLidlPromo(url, pages);
-
-    res.status(200).json({
-      count: promos.length,
-      promos,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      error: (err as Error).message,
-    });
-  }
 }
