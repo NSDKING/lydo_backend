@@ -8,26 +8,40 @@ export interface LidlPromo {
   title: string;
   price: string;
   available: boolean | null;
-  imageUrl?: string;
+  image_url?: string;
   supermarket: 'Lidl';
-  sourceUrl: string;
+  source_url: string;
 }
 
 /**
  * Extract products directly from rendered DOM
- * (FAST VERSION - no scroll, no useless waits)
  */
 async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
-  await page.goto(url, {
-    waitUntil: 'domcontentloaded',
-    timeout: 60000,
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
+
+  await page.waitForTimeout(2500);
+
+  // Scroll to trigger lazy loading
+  await page.evaluate(async () => {
+    await new Promise<void>((resolve) => {
+      let lastHeight = 0;
+
+      const timer = setInterval(() => {
+        window.scrollTo(0, document.body.scrollHeight);
+
+        const newHeight = document.body.scrollHeight;
+
+        if (newHeight === lastHeight) {
+          clearInterval(timer);
+          resolve();
+        }
+
+        lastHeight = newHeight;
+      }, 800);
+    });
   });
 
-  // Wait only for product grid (fast + reliable)
-  await page.waitForSelector(
-    '[data-testid="product-card"], article, .product, div[class*="product"]',
-    { timeout: 15000 }
-  );
+  await page.waitForTimeout(1500);
 
   const products = await page.evaluate(() => {
     const cards = Array.from(
@@ -47,7 +61,7 @@ async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
         card.querySelector('[class*="price"]')?.textContent?.trim() ||
         null;
 
-      const imageUrl =
+      const image_url =
         (card.querySelector('img') as HTMLImageElement)?.src || null;
 
       const availabilityText =
@@ -66,7 +80,7 @@ async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
         title,
         price,
         available,
-        imageUrl,
+        image_url,
       };
     });
   });
@@ -77,9 +91,9 @@ async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
       title: p.title,
       price: p.price,
       available: p.available,
-      imageUrl: p.imageUrl, // ✅ FIXED BUG HERE
+      image_url: p.image_url,      // ✅ FIXED
       supermarket: 'Lidl',
-      sourceUrl: url,
+      source_url: url,             // ✅ FIXED
     }));
 }
 
@@ -89,7 +103,7 @@ async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
 export async function scrapeLidlPromo(
   catalogueUrl: string,
   maxPages = 5
-) {
+): Promise<LidlPromo[]> {
   const browser = await chromium.launch({
     headless: true,
   });
@@ -102,7 +116,7 @@ export async function scrapeLidlPromo(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
     });
 
-    // Block heavy assets BEFORE navigation (performance boost)
+    // block heavy resources BEFORE navigation
     await page.route('**/*', (route) => {
       const type = route.request().resourceType();
 
@@ -135,7 +149,6 @@ export async function scrapeLidlPromo(
     await browser.close();
   }
 
-  // Save to Supabase (make sure you use UPSERT in saveLidlPromos)
   if (allPromos.length > 0) {
     await saveLidlPromos(allPromos);
   }
