@@ -14,14 +14,12 @@ export interface LidlPromo {
 }
 
 /**
- * Extract products directly from rendered DOM
+ * Extract products from page
  */
 async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
-
   await page.waitForTimeout(2500);
 
-  // Scroll to trigger lazy loading
   await page.evaluate(async () => {
     await new Promise<void>((resolve) => {
       let lastHeight = 0;
@@ -91,9 +89,9 @@ async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
       title: p.title,
       price: p.price,
       available: p.available,
-      image_url: p.image_url,      // ✅ FIXED
+      image_url: p.image_url,   // ✅ correct DB field
       supermarket: 'Lidl',
-      source_url: url,             // ✅ FIXED
+      source_url: url,          // ✅ correct DB field
     }));
 }
 
@@ -103,10 +101,8 @@ async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
 export async function scrapeLidlPromo(
   catalogueUrl: string,
   maxPages = 5
-): Promise<LidlPromo[]> {
-  const browser = await chromium.launch({
-    headless: true,
-  });
+) {
+  const browser = await chromium.launch({ headless: true });
 
   const allPromos: LidlPromo[] = [];
 
@@ -116,7 +112,6 @@ export async function scrapeLidlPromo(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
     });
 
-    // block heavy resources BEFORE navigation
     await page.route('**/*', (route) => {
       const type = route.request().resourceType();
 
@@ -142,7 +137,6 @@ export async function scrapeLidlPromo(
       }
 
       allPromos.push(...promos);
-
       console.log(`Page ${pageNum}: ${promos.length} products`);
     }
   } finally {
@@ -150,7 +144,7 @@ export async function scrapeLidlPromo(
   }
 
   if (allPromos.length > 0) {
-    await saveLidlPromos(allPromos);
+    await saveLidlPromos(allPromos); // ✅ UPSERT FIX APPLIES HERE
   }
 
   return allPromos;
