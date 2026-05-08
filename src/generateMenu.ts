@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import Anthropic from '@anthropic-ai/sdk';
-import { saveGeneratedMenu } from './supabaseClient';
+import { saveGeneratedMenu } from './supabaseClient.js';
 
 dotenv.config();
 
