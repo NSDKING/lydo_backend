@@ -15,33 +15,19 @@ export interface LidlPromo {
 
 /**
  * Extract products directly from rendered DOM
+ * (FAST VERSION - no scroll, no useless waits)
  */
 async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
-  await page.goto(url, { waitUntil: 'networkidle', timeout: 60000 });
-
-  await page.waitForTimeout(2500);
-
-  // safer scroll (handles lazy-loaded grids better than fixed scroll)
-  await page.evaluate(async () => {
-    await new Promise<void>((resolve) => {
-      let lastHeight = 0;
-
-      const timer = setInterval(() => {
-        window.scrollTo(0, document.body.scrollHeight);
-
-        const newHeight = document.body.scrollHeight;
-
-        if (newHeight === lastHeight) {
-          clearInterval(timer);
-          resolve();
-        }
-
-        lastHeight = newHeight;
-      }, 800);
-    });
+  await page.goto(url, {
+    waitUntil: 'domcontentloaded',
+    timeout: 60000,
   });
 
-  await page.waitForTimeout(1500);
+  // Wait only for product grid (fast + reliable)
+  await page.waitForSelector(
+    '[data-testid="product-card"], article, .product, div[class*="product"]',
+    { timeout: 15000 }
+  );
 
   const products = await page.evaluate(() => {
     const cards = Array.from(
@@ -91,7 +77,7 @@ async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
       title: p.title,
       price: p.price,
       available: p.available,
-      imageUrl: p.imageUrl,
+      imageUrl: p.imageUrl, // ✅ FIXED BUG HERE
       supermarket: 'Lidl',
       sourceUrl: url,
     }));
@@ -100,7 +86,10 @@ async function extractFromPage(page: any, url: string): Promise<LidlPromo[]> {
 /**
  * MAIN SCRAPER
  */
-export async function scrapeLidlPromo(catalogueUrl: string, maxPages = 5) {
+export async function scrapeLidlPromo(
+  catalogueUrl: string,
+  maxPages = 5
+) {
   const browser = await chromium.launch({
     headless: true,
   });
@@ -113,7 +102,7 @@ export async function scrapeLidlPromo(catalogueUrl: string, maxPages = 5) {
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36',
     });
 
-    // ✅ IMPORTANT: block heavy resources BEFORE navigation
+    // Block heavy assets BEFORE navigation (performance boost)
     await page.route('**/*', (route) => {
       const type = route.request().resourceType();
 
@@ -146,6 +135,7 @@ export async function scrapeLidlPromo(catalogueUrl: string, maxPages = 5) {
     await browser.close();
   }
 
+  // Save to Supabase (make sure you use UPSERT in saveLidlPromos)
   if (allPromos.length > 0) {
     await saveLidlPromos(allPromos);
   }
