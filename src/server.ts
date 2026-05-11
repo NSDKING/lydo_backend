@@ -2,7 +2,7 @@ import './wsPolyfill.js';
  
 import express, { Request, Response } from 'express';
 
-import { handler as menuHandler } from './generateMenu.js';
+import { handler as menuHandler, getWeekHandler, swapHandler, adaptHandler } from './generateMenu.js';
 import { handler as tiktokHandler } from './processTiktok.js';
 import { handler as lidlHandler } from './scrapeLidlPromo.js';
 
@@ -50,7 +50,10 @@ app.post('/user-data', async (req: Request, res: Response) => {
 
 app.get('/lidl/promos', lidlHandler);
 
+app.get('/menu/week/:key', getWeekHandler);
 app.post('/menu/generate', menuHandler);
+app.post('/menu/swap', swapHandler);
+app.post('/recipe/adapt', adaptHandler);
 
 app.post('/tiktok/analyze', tiktokHandler);
 

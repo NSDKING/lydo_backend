@@ -1,12 +1,11 @@
 import dotenv from 'dotenv';
 import Anthropic from '@anthropic-ai/sdk';
-import { supabasePublic } from './supabaseClient.js';
+import { supabasePublic, getWeeklyPlan, saveWeeklyPlan } from './supabaseClient.js';
 
 dotenv.config();
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-// Stable system prompt — cached across all requests
 const SYSTEM_PROMPT = `You are a precision nutrition assistant that creates practical meal plans using real supermarket products.
 
 You will receive a list of Lidl supermarket promotions and a user request. Your job is to create a meal plan that:
@@ -15,7 +14,7 @@ You will receive a list of Lidl supermarket promotions and a user request. Your 
 3. Uses realistic portions and cooking methods
 4. Names meals clearly (e.g. "Poulet rôti + légumes vapeur")
 
-CRITICAL: Your entire response must be a single valid JSON object matching this exact schema — no markdown, no prose, no code fences:
+CRITICAL: Your entire response must be a single valid JSON object — no markdown, no prose, no code fences:
 
 {
   "days": [
@@ -41,7 +40,7 @@ CRITICAL: Your entire response must be a single valid JSON object matching this 
 }`;
 
 export interface MenuRequest {
-  userId: string;
+  userId?: string;
   preferences?: string;
   dietaryRestrictions?: string;
   mealsPerDay?: number;
@@ -72,6 +71,15 @@ export interface MenuPlan {
   days: DayPlan[];
 }
 
+export function getWeekKey(date = new Date()): string {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + 3 - ((d.getDay() + 6) % 7));
+  const yearStart = new Date(d.getFullYear(), 0, 4);
+  const week = 1 + Math.round(((d.getTime() - yearStart.getTime()) / 86400000 - 3 + ((yearStart.getDay() + 6) % 7)) / 7);
+  return `${d.getFullYear()}-W${String(week).padStart(2, '0')}`;
+}
+
 export async function fetchLidlPromos(): Promise<Array<Record<string, any>>> {
   const { data, error } = await supabasePublic
     .from('lidl_promos')
@@ -86,18 +94,28 @@ export async function fetchLidlPromos(): Promise<Array<Record<string, any>>> {
 
 export function buildPromosText(promos: Array<Record<string, any>>): string {
   if (!promos.length) return 'No promotions available at this time.';
-
   const lines = promos.map(p => {
     const discount = p.discount_percent ? ` [${p.discount_percent}% OFF]` : '';
     const wasPrice = p.old_price ? ` (was ${p.old_price}€)` : '';
     return `- ${p.title}: ${p.price}€${wasPrice}${discount}`;
   });
-
   return `Current Lidl promotions (${promos.length} items, sorted by discount):\n${lines.join('\n')}`;
 }
 
+function parseJson<T>(text: string): T {
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) throw new Error(`No JSON found in response: ${text.slice(0, 200)}`);
+    return JSON.parse(match[0]) as T;
+  }
+}
+
+// ─── Generate full week plan ────────────────────────────────────────────────
+
 export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPlan }> {
-  const [promos] = await Promise.all([fetchLidlPromos()]);
+  const promos = await fetchLidlPromos();
   const promosText = buildPromosText(promos);
 
   const days = request.days ?? 7;
@@ -115,49 +133,22 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
     model: 'claude-opus-4-7',
     max_tokens: 8000,
     thinking: { type: 'adaptive' },
-    system: [
-      {
-        type: 'text',
-        text: SYSTEM_PROMPT,
-        // @ts-ignore — cache_control is supported in 0.95+
-        cache_control: { type: 'ephemeral' },
-      },
-    ],
-    messages: [
-      {
-        role: 'user',
-        content: [
-          {
-            type: 'text',
-            text: promosText,
-            // @ts-ignore
-            cache_control: { type: 'ephemeral' },
-          },
-          {
-            type: 'text',
-            text: userRequest,
-          },
-        ],
-      },
-    ],
+    system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as any],
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: promosText, cache_control: { type: 'ephemeral' } } as any,
+        { type: 'text', text: userRequest },
+      ],
+    }],
   });
 
   const message = await stream.finalMessage();
-
   const rawText = message.content
     .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map(b => b.text)
-    .join('');
+    .map(b => b.text).join('');
 
-  let plan: MenuPlan;
-  try {
-    plan = JSON.parse(rawText) as MenuPlan;
-  } catch {
-    // Try to extract JSON if Claude wrapped it in prose
-    const match = rawText.match(/\{[\s\S]*\}/);
-    if (!match) throw new Error(`Claude did not return valid JSON. Response: ${rawText.slice(0, 300)}`);
-    plan = JSON.parse(match[0]) as MenuPlan;
-  }
+  const plan = parseJson<MenuPlan>(rawText);
 
   const usage = message.usage as any;
   const cacheParts: string[] = [];
@@ -169,12 +160,118 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
   return { plan };
 }
 
+// ─── Swap a single meal ─────────────────────────────────────────────────────
+
+export async function swapSingleMeal(dayPlan: DayPlan, mealIndex: number): Promise<Meal> {
+  const [promos] = await Promise.all([fetchLidlPromos()]);
+  const promosText = buildPromosText(promos);
+
+  const mealToReplace = dayPlan.meals[mealIndex];
+  const otherMeals = dayPlan.meals
+    .filter((_, i) => i !== mealIndex)
+    .map(m => `${m.name} (${m.calories} kcal, P:${m.protein_g}g C:${m.carbs_g}g F:${m.fat_g}g)`)
+    .join('; ');
+
+  const prompt = `Day target: ${dayPlan.total_calories} kcal. Other meals already planned: ${otherMeals}.
+Replace: "${mealToReplace.name}" (${mealToReplace.calories} kcal).
+
+${promosText}
+
+Suggest ONE different meal that fits nutritionally. Return JSON only:
+{"name":"...","calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"ingredients":["..."],"lidl_products_used":["..."]}`;
+
+  const msg = await anthropic.messages.create({
+    model: 'claude-opus-4-7',
+    max_tokens: 600,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join('');
+  return parseJson<Meal>(text);
+}
+
+// ─── Adapt a TikTok recipe with Lidl products ───────────────────────────────
+
+export async function adaptRecipeWithLidl(title: string, ingredients: string[]): Promise<any> {
+  const promos = await fetchLidlPromos();
+  const promosText = buildPromosText(promos);
+
+  const prompt = `Recipe: "${title}"
+Original ingredients: ${ingredients.join(', ')}
+
+${promosText}
+
+Match each ingredient to the closest available Lidl promotion where possible.
+Return JSON only:
+{
+  "adaptedIngredients": [
+    { "original": "500g chicken breast", "lidlProduct": "Filets de poulet Lidl — 4.99€", "note": "Use 2 packs" },
+    { "original": "200ml olive oil", "lidlProduct": null, "note": "Not available at Lidl" }
+  ]
+}`;
+
+  const msg = await anthropic.messages.create({
+    model: 'claude-opus-4-7',
+    max_tokens: 800,
+    messages: [{ role: 'user', content: prompt }],
+  });
+
+  const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join('');
+  return parseJson<any>(text);
+}
+
+// ─── Route handlers ──────────────────────────────────────────────────────────
+
 export async function handler(req: any, res: any) {
   try {
-    const result = await generateMenu(req.body as MenuRequest);
-    return res.status(200).json(result);
+    const weekKey = getWeekKey();
+
+    // Always generate fresh (client checked cache before calling this)
+    const { plan } = await generateMenu(req.body as MenuRequest);
+
+    // Save to Supabase for future loads
+    saveWeeklyPlan(weekKey, plan as any).catch(e =>
+      console.warn('Failed to cache weekly plan:', (e as Error).message)
+    );
+
+    return res.status(200).json({ plan, weekKey });
   } catch (error) {
     console.error('Menu generation failed:', error);
+    return res.status(500).json({ error: (error as Error).message });
+  }
+}
+
+export async function getWeekHandler(req: any, res: any) {
+  try {
+    const { key } = req.params;
+    const plan = await getWeeklyPlan(key);
+    if (!plan) return res.status(404).json({ error: 'No plan for this week' });
+    return res.status(200).json({ plan, weekKey: key });
+  } catch (error) {
+    return res.status(500).json({ error: (error as Error).message });
+  }
+}
+
+export async function swapHandler(req: any, res: any) {
+  try {
+    const { dayPlan, mealIndex } = req.body;
+    if (!dayPlan || mealIndex === undefined) return res.status(400).json({ error: 'Missing dayPlan or mealIndex' });
+    const meal = await swapSingleMeal(dayPlan as DayPlan, mealIndex as number);
+    return res.status(200).json({ meal });
+  } catch (error) {
+    console.error('Swap failed:', error);
+    return res.status(500).json({ error: (error as Error).message });
+  }
+}
+
+export async function adaptHandler(req: any, res: any) {
+  try {
+    const { title, ingredients } = req.body;
+    if (!title || !ingredients) return res.status(400).json({ error: 'Missing title or ingredients' });
+    const result = await adaptRecipeWithLidl(title as string, ingredients as string[]);
+    return res.status(200).json(result);
+  } catch (error) {
+    console.error('Adapt failed:', error);
     return res.status(500).json({ error: (error as Error).message });
   }
 }
