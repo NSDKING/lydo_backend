@@ -4,18 +4,22 @@ import dotenv from 'dotenv';
 dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SECRET_KEY;
+const supabaseSecretKey = process.env.SUPABASE_SECRET_KEY;
+const supabasePublishableKey = process.env.SUPABASE_PUBLISHABLE_KEY;
 
-if (!supabaseUrl || !supabaseKey) {
+if (!supabaseUrl || !supabaseSecretKey) {
   throw new Error('SUPABASE_URL and SUPABASE_SECRET_KEY must be set in the environment');
 }
 
-export const supabaseAdmin = createClient(supabaseUrl, supabaseKey, {
-  
-  auth: {
-    persistSession: false,
-  },
+// Admin client — server-side only, bypasses RLS, used for writes
+export const supabaseAdmin = createClient(supabaseUrl, supabaseSecretKey, {
+  auth: { persistSession: false },
 });
+
+// Public client — safe for read queries that respect RLS
+export const supabasePublic = supabasePublishableKey
+  ? createClient(supabaseUrl, supabasePublishableKey, { auth: { persistSession: false } })
+  : supabaseAdmin;
 
 // -------------------- USERS --------------------
 export async function saveUserData(userId: string, profile: Record<string, any>) {
@@ -35,7 +39,7 @@ export async function saveUserData(userId: string, profile: Record<string, any>)
 export async function saveLidlPromos(promos: Array<Record<string, any>>) {
   const { data, error } = await supabaseAdmin
     .from('lidl_promos')
-    .insert(promos)
+    .upsert(promos, { onConflict: 'title,source_url' })
     .select();
 
   if (error) throw error;
