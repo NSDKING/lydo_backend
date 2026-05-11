@@ -10,7 +10,7 @@
     "postinstall": "playwright install chromium --with-deps"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.24.3",
+    "@anthropic-ai/sdk": "^0.95.2",
     "@supabase/supabase-js": "^2.0.0",
     "cheerio": "^1.0.0",
     "dotenv": "^16.3.1",

@@ -41,19 +41,34 @@ async function dismissCookieBanner(page: Page) {
 async function autoScroll(page: Page) {
   await page.evaluate(async () => {
     await new Promise<void>((resolve) => {
+      // phase 1: incremental scroll (triggers intersection observers / lazy loads)
       let total = 0;
-      const distance = 600;
-      const timer = setInterval(() => {
+      const distance = 500;
+      const step = setInterval(() => {
         window.scrollBy(0, distance);
         total += distance;
         if (total >= document.body.scrollHeight) {
-          clearInterval(timer);
-          resolve();
+          clearInterval(step);
+
+          // phase 2: wait for new content, then keep scrolling if height grew
+          let lastHeight = document.body.scrollHeight;
+          let stableCount = 0;
+          const stabilise = setInterval(() => {
+            window.scrollTo(0, document.body.scrollHeight);
+            const h = document.body.scrollHeight;
+            if (h === lastHeight) {
+              stableCount++;
+              if (stableCount >= 3) { clearInterval(stabilise); resolve(); }
+            } else {
+              stableCount = 0;
+              lastHeight = h;
+            }
+          }, 700);
         }
-      }, 200);
+      }, 250);
     });
   });
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(500);
 }
 
 async function extractFromPage(page: Page, url: string, isFirstPage: boolean): Promise<LidlPromo[]> {
@@ -162,7 +177,7 @@ async function extractFromPage(page: Page, url: string, isFirstPage: boolean): P
   return [];
 }
 
-export async function scrapeLidlPromo(catalogueUrl: string, maxPages = 5) {
+export async function scrapeLidlPromo(catalogueUrl: string, maxPages = 10) {
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
@@ -195,25 +210,31 @@ export async function scrapeLidlPromo(catalogueUrl: string, maxPages = 5) {
     });
 
     const baseUrl = catalogueUrl.split('?')[0];
-    let consecutiveEmpty = 0;
+    const seenTitles = new Set<string>();
+    let consecutiveNoNew = 0;
 
     for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
-      const offset = (pageNum - 1) * 24;
+      // server returns 12 items at offset=0, then 24 per page after that
+      const offset = pageNum === 1 ? 0 : 12 + (pageNum - 2) * 24;
       const pageUrl = `${baseUrl}?offset=${offset}`;
 
       console.log(`SCRAPING PAGE ${pageNum} (offset=${offset})`);
 
       const promos = await extractFromPage(page, pageUrl, pageNum === 1);
 
-      if (!promos.length) {
-        consecutiveEmpty++;
-        if (consecutiveEmpty >= 2) {
-          console.log('Two consecutive empty pages — stopping');
+      const newPromos = promos.filter(p => !seenTitles.has(p.title));
+      newPromos.forEach(p => seenTitles.add(p.title));
+
+      if (!newPromos.length) {
+        consecutiveNoNew++;
+        if (consecutiveNoNew >= 2) {
+          console.log('No new products on 2 consecutive pages — stopping');
           break;
         }
       } else {
-        consecutiveEmpty = 0;
-        allPromos.push(...promos);
+        consecutiveNoNew = 0;
+        allPromos.push(...newPromos);
+        console.log(`  ${newPromos.length} new, ${promos.length - newPromos.length} dupes`);
       }
 
       if (pageNum < maxPages) {
@@ -237,7 +258,7 @@ export async function handler(req: any, res: any) {
     const url = req.query?.url as string;
     if (!url) return res.status(400).json({ error: 'Missing url' });
 
-    const pages = req.query?.pages ? parseInt(req.query.pages, 10) : 1;
+    const pages = req.query?.pages ? parseInt(req.query.pages, 10) : 10;
     const promos = await scrapeLidlPromo(url, pages);
 
     return res.status(200).json({ count: promos.length, promos });
