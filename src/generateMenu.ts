@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import Anthropic from '@anthropic-ai/sdk';
-import { saveGeneratedMenu, supabasePublic } from './supabaseClient.js';
+import { supabasePublic } from './supabaseClient.js';
 
 dotenv.config();
 
@@ -96,7 +96,7 @@ export function buildPromosText(promos: Array<Record<string, any>>): string {
   return `Current Lidl promotions (${promos.length} items, sorted by discount):\n${lines.join('\n')}`;
 }
 
-export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPlan; saved: any }> {
+export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPlan }> {
   const [promos] = await Promise.all([fetchLidlPromos()]);
   const promosText = buildPromosText(promos);
 
@@ -159,24 +159,6 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
     plan = JSON.parse(match[0]) as MenuPlan;
   }
 
-  let saved = null;
-  if (request.userId) {
-    try {
-      const record = {
-        user_id: request.userId,
-        preferences: request.preferences ?? null,
-        dietary_restrictions: request.dietaryRestrictions ?? null,
-        days,
-        meals_per_day: mealsPerDay,
-        plan_text: JSON.stringify(plan),
-        created_at: new Date().toISOString(),
-      };
-      saved = await saveGeneratedMenu(record);
-    } catch (err) {
-      console.warn('Could not save menu to DB:', (err as Error).message);
-    }
-  }
-
   const usage = message.usage as any;
   const cacheParts: string[] = [];
   if (usage.cache_creation_input_tokens) cacheParts.push(`${usage.cache_creation_input_tokens} written`);
@@ -184,15 +166,12 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
   console.log(`Menu generated. Tokens: ${usage.input_tokens} in / ${usage.output_tokens} out` +
     (cacheParts.length ? ` | cache: ${cacheParts.join(', ')}` : ''));
 
-  return { plan, saved };
+  return { plan };
 }
 
 export async function handler(req: any, res: any) {
   try {
-    const body = req.body as MenuRequest;
-    if (!body.userId) return res.status(400).json({ error: 'Missing userId' });
-
-    const result = await generateMenu(body);
+    const result = await generateMenu(req.body as MenuRequest);
     return res.status(200).json(result);
   } catch (error) {
     console.error('Menu generation failed:', error);
