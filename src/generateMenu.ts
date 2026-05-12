@@ -275,3 +275,18 @@ export async function adaptHandler(req: any, res: any) {
     return res.status(500).json({ error: (error as Error).message });
   }
 }
+
+export async function catalogHandler(req: any, res: any) {
+  try {
+    const { data, error } = await supabasePublic
+      .from('lidl_promos')
+      .select('title, price, old_price, discount_percent, image_url')
+      .eq('available', true)
+      .order('discount_percent', { ascending: false, nullsFirst: false })
+      .limit(300);
+    if (error) throw error;
+    return res.status(200).json({ products: data ?? [] });
+  } catch (error) {
+    return res.status(500).json({ error: (error as Error).message });
+  }
+}

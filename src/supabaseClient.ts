@@ -72,18 +72,22 @@ export async function saveRecipeAnalysis(recipe: Record<string, any>) {
 export async function getWeeklyPlan(weekKey: string): Promise<Record<string, any> | null> {
   const { data, error } = await supabasePublic
     .from('weekly_plans')
-    .select('plan_json')
+    .select('plan_text')
     .eq('week_key', weekKey)
     .single();
 
-  if (error || !data) return null;
-  return data.plan_json as Record<string, any>;
+  if (error || !data?.plan_text) return null;
+  try {
+    return JSON.parse(data.plan_text) as Record<string, any>;
+  } catch {
+    return null;
+  }
 }
 
 export async function saveWeeklyPlan(weekKey: string, plan: Record<string, any>): Promise<void> {
   const { error } = await supabaseAdmin
     .from('weekly_plans')
-    .upsert({ week_key: weekKey, plan_json: plan, created_at: new Date().toISOString() });
+    .upsert({ week_key: weekKey, plan_text: JSON.stringify(plan), created_at: new Date().toISOString() });
 
   if (error) throw error;
 }
