@@ -32,12 +32,15 @@ CRITICAL: Your entire response must be a single valid JSON object — no markdow
           "carbs_g": 60,
           "fat_g": 15,
           "ingredients": ["200g chicken breast", "150g rice"],
+          "steps": ["Season chicken, heat pan on high.", "Cook chicken 6 min each side.", "Boil rice 12 min, drain.", "Plate and serve."],
           "lidl_products_used": ["Filets de poulet Lidl"]
         }
       ]
     }
   ]
-}`;
+}
+
+For steps: 3–5 concise cooking instructions per meal, each under 12 words.`;
 
 export interface MenuRequest {
   userId?: string;
@@ -55,6 +58,7 @@ export interface Meal {
   carbs_g: number;
   fat_g: number;
   ingredients: string[];
+  steps: string[];
   lidl_products_used: string[];
 }
 
@@ -131,7 +135,7 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
 
   const stream = await anthropic.messages.stream({
     model: 'claude-opus-4-7',
-    max_tokens: 8000,
+    max_tokens: 16000,
     thinking: { type: 'adaptive' },
     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as any],
     messages: [{
@@ -181,11 +185,11 @@ ${prefLine}
 ${promosText}
 
 Suggest ONE different meal that fits nutritionally. Return JSON only:
-{"name":"...","calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"ingredients":["..."],"lidl_products_used":["..."]}`;
+{"name":"...","calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"ingredients":["..."],"steps":["Step 1.","Step 2.","Step 3."],"lidl_products_used":["..."]}`;
 
   const msg = await anthropic.messages.create({
     model: 'claude-opus-4-7',
-    max_tokens: 600,
+    max_tokens: 900,
     messages: [{ role: 'user', content: prompt }],
   });
 
