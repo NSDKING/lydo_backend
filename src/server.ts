@@ -5,6 +5,7 @@ import express, { Request, Response } from 'express';
 import { handler as menuHandler, getWeekHandler, swapHandler, adaptHandler, catalogHandler } from './generateMenu.js';
 import { handler as tiktokHandler } from './processTiktok.js';
 import { handler as lidlHandler } from './scrapeLidlPromo.js';
+import { handler as fullCatalogHandler } from './scrapeFullCatalog.js';
 
 import { saveUserData } from './supabaseClient.js';
 
@@ -50,6 +51,7 @@ app.post('/user-data', async (req: Request, res: Response) => {
 
 app.get('/lidl/promos', lidlHandler);
 app.get('/lidl/catalog', catalogHandler);
+app.post('/lidl/scrape-catalog', fullCatalogHandler);
 
 app.get('/menu/week/:key', getWeekHandler);
 app.post('/menu/generate', menuHandler);

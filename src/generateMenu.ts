@@ -162,7 +162,7 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
 
 // ─── Swap a single meal ─────────────────────────────────────────────────────
 
-export async function swapSingleMeal(dayPlan: DayPlan, mealIndex: number): Promise<Meal> {
+export async function swapSingleMeal(dayPlan: DayPlan, mealIndex: number, preferences?: string): Promise<Meal> {
   const [promos] = await Promise.all([fetchLidlPromos()]);
   const promosText = buildPromosText(promos);
 
@@ -172,8 +172,11 @@ export async function swapSingleMeal(dayPlan: DayPlan, mealIndex: number): Promi
     .map(m => `${m.name} (${m.calories} kcal, P:${m.protein_g}g C:${m.carbs_g}g F:${m.fat_g}g)`)
     .join('; ');
 
+  const prefLine = preferences ? `User preferences for replacement: ${preferences}.` : '';
+
   const prompt = `Day target: ${dayPlan.total_calories} kcal. Other meals already planned: ${otherMeals}.
 Replace: "${mealToReplace.name}" (${mealToReplace.calories} kcal).
+${prefLine}
 
 ${promosText}
 
@@ -254,9 +257,9 @@ export async function getWeekHandler(req: any, res: any) {
 
 export async function swapHandler(req: any, res: any) {
   try {
-    const { dayPlan, mealIndex } = req.body;
+    const { dayPlan, mealIndex, preferences } = req.body;
     if (!dayPlan || mealIndex === undefined) return res.status(400).json({ error: 'Missing dayPlan or mealIndex' });
-    const meal = await swapSingleMeal(dayPlan as DayPlan, mealIndex as number);
+    const meal = await swapSingleMeal(dayPlan as DayPlan, mealIndex as number, preferences as string | undefined);
     return res.status(200).json({ meal });
   } catch (error) {
     console.error('Swap failed:', error);
