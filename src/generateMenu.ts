@@ -283,6 +283,31 @@ export async function adaptHandler(req: any, res: any) {
   }
 }
 
+export async function foodScanHandler(req: any, res: any) {
+  try {
+    const { imageBase64 } = req.body;
+    if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
+
+    const msg = await anthropic.messages.create({
+      model: 'claude-opus-4-7',
+      max_tokens: 300,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: imageBase64 } },
+          { type: 'text', text: 'Analyze this food photo. Estimate nutrition for the visible portion. Return JSON only:\n{"name":"...","calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"notes":"brief portion note"}' },
+        ],
+      }],
+    });
+
+    const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join('');
+    return res.status(200).json(parseJson<any>(text));
+  } catch (error) {
+    console.error('Food scan failed:', error);
+    return res.status(500).json({ error: (error as Error).message });
+  }
+}
+
 export async function catalogHandler(req: any, res: any) {
   try {
     const { data, error } = await supabasePublic
