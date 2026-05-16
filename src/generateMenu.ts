@@ -134,7 +134,7 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
   ].filter(Boolean).join(' ');
 
   const stream = await anthropic.messages.stream({
-    model: 'claude-opus-4-7',
+    model: 'claude-sonnet-4-6',
     max_tokens: 16000,
     thinking: { type: 'adaptive' },
     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as any],
@@ -178,19 +178,23 @@ export async function swapSingleMeal(dayPlan: DayPlan, mealIndex: number, prefer
 
   const prefLine = preferences ? `User preferences for replacement: ${preferences}.` : '';
 
-  const prompt = `Day target: ${dayPlan.total_calories} kcal. Other meals already planned: ${otherMeals}.
+  const userRequest = `Day target: ${dayPlan.total_calories} kcal. Other meals already planned: ${otherMeals}.
 Replace: "${mealToReplace.name}" (${mealToReplace.calories} kcal).
 ${prefLine}
-
-${promosText}
 
 Suggest ONE different meal that fits nutritionally. Return JSON only:
 {"name":"...","calories":0,"protein_g":0,"carbs_g":0,"fat_g":0,"ingredients":["..."],"steps":["Step 1.","Step 2.","Step 3."],"lidl_products_used":["..."]}`;
 
   const msg = await anthropic.messages.create({
-    model: 'claude-opus-4-7',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 900,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: promosText, cache_control: { type: 'ephemeral' } } as any,
+        { type: 'text', text: userRequest },
+      ],
+    }],
   });
 
   const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join('');
@@ -203,10 +207,8 @@ export async function adaptRecipeWithLidl(title: string, ingredients: string[]):
   const promos = await fetchLidlPromos();
   const promosText = buildPromosText(promos);
 
-  const prompt = `Recipe: "${title}"
+  const userRequest = `Recipe: "${title}"
 Original ingredients: ${ingredients.join(', ')}
-
-${promosText}
 
 Match each ingredient to the closest available Lidl promotion where possible.
 Return JSON only:
@@ -218,9 +220,15 @@ Return JSON only:
 }`;
 
   const msg = await anthropic.messages.create({
-    model: 'claude-opus-4-7',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 800,
-    messages: [{ role: 'user', content: prompt }],
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: promosText, cache_control: { type: 'ephemeral' } } as any,
+        { type: 'text', text: userRequest },
+      ],
+    }],
   });
 
   const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join('');
@@ -289,7 +297,7 @@ export async function foodScanHandler(req: any, res: any) {
     if (!imageBase64) return res.status(400).json({ error: 'Missing imageBase64' });
 
     const msg = await anthropic.messages.create({
-      model: 'claude-opus-4-7',
+      model: 'claude-haiku-4-5-20251001',
       max_tokens: 300,
       messages: [{
         role: 'user',
