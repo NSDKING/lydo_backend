@@ -135,8 +135,7 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
 
   const stream = await anthropic.messages.stream({
     model: 'claude-sonnet-4-6',
-    max_tokens: 16000,
-    thinking: { type: 'adaptive' },
+    max_tokens: 5000,
     system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as any],
     messages: [{
       role: 'user',
