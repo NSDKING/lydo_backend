@@ -239,12 +239,13 @@ Return JSON only:
 export async function handler(req: any, res: any) {
   try {
     const weekKey = getWeekKey();
+    const body = req.body as MenuRequest;
 
     // Always generate fresh (client checked cache before calling this)
-    const { plan } = await generateMenu(req.body as MenuRequest);
+    const { plan } = await generateMenu(body);
 
-    // Save to Supabase for future loads
-    saveWeeklyPlan(weekKey, plan as any).catch(e =>
+    // Save to Supabase for future loads, scoped to the user
+    saveWeeklyPlan(weekKey, body.userId, plan as any).catch(e =>
       console.warn('Failed to cache weekly plan:', (e as Error).message)
     );
 

@@ -84,10 +84,10 @@ export async function getWeeklyPlan(weekKey: string): Promise<Record<string, any
   }
 }
 
-export async function saveWeeklyPlan(weekKey: string, plan: Record<string, any>): Promise<void> {
+export async function saveWeeklyPlan(weekKey: string, userId: string | undefined, plan: Record<string, any>): Promise<void> {
   const { error } = await supabaseAdmin
     .from('weekly_plans')
-    .upsert({ week_key: weekKey, plan_text: JSON.stringify(plan), created_at: new Date().toISOString() });
+    .upsert({ week_key: weekKey, user_id: userId ?? null, plan_text: JSON.stringify(plan), created_at: new Date().toISOString() });
 
   if (error) throw error;
 }
