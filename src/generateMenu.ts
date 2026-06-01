@@ -311,10 +311,26 @@ export async function handler(req: any, res: any) {
     const weekKey = getWeekKey();
     const body = req.body as MenuRequest;
 
-    // Always generate fresh (client checked cache before calling this)
+    // Server-side guard: never regenerate if a plan already exists for this user+week
+    if (body.userId) {
+      const { data: existing } = await supabasePublic
+        .from('weekly_plans')
+        .select('plan_text')
+        .eq('week_key', weekKey)
+        .eq('user_id', body.userId)
+        .maybeSingle();
+
+      if (existing?.plan_text) {
+        try {
+          const plan = JSON.parse(existing.plan_text);
+          console.log(`Cache hit for user ${body.userId} week ${weekKey} — skipping generation`);
+          return res.status(200).json({ plan, weekKey, cached: true });
+        } catch { /* corrupted entry — fall through to regenerate */ }
+      }
+    }
+
     const { plan } = await generateMenu(body);
 
-    // Save to Supabase for future loads, scoped to the user
     saveWeeklyPlan(weekKey, body.userId, plan as any).catch(e =>
       console.warn('Failed to cache weekly plan:', (e as Error).message)
     );
