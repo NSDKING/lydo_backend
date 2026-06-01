@@ -5,9 +5,9 @@ import express, { Request, Response } from 'express';
 import { handler as menuHandler, getWeekHandler, swapHandler, stepsHandler, adaptHandler, catalogHandler, foodScanHandler } from './generateMenu.js';
 import { handler as tiktokHandler } from './processTiktok.js';
 import { handler as lidlHandler } from './scrapeLidlPromo.js';
-import { handler as fullCatalogHandler } from './scrapeFullCatalog.js';
+import { handler as fullCatalogHandler, scrapeFullCatalog } from './scrapeFullCatalog.js';
 
-import { saveUserData } from './supabaseClient.js';
+import { saveUserData, supabasePublic } from './supabaseClient.js';
 
 const app = express();
 
@@ -73,6 +73,42 @@ Health:  /health
 ---------------------------------
 `);
 });
+
+// ─── Auto-scrape Lidl catalog ────────────────────────────────────────────────
+// Lidl France refreshes promos every Thursday. We check DB staleness on startup
+// and every 6 hours — if data is older than 3 days, trigger a full catalog scrape.
+
+async function maybeAutoScrape() {
+  try {
+    const { data } = await supabasePublic
+      .from('lidl_promos')
+      .select('updated_at')
+      .order('updated_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (!data?.updated_at) {
+      console.log('[auto-scrape] No Lidl data found — running initial scrape');
+      scrapeFullCatalog().catch(e => console.error('[auto-scrape] failed:', e.message));
+      return;
+    }
+
+    const ageMs = Date.now() - new Date(data.updated_at).getTime();
+    const ageDays = ageMs / (1000 * 60 * 60 * 24);
+    console.log(`[auto-scrape] Lidl data age: ${ageDays.toFixed(1)} days`);
+
+    if (ageDays >= 3) {
+      console.log('[auto-scrape] Stale — triggering catalog scrape');
+      scrapeFullCatalog().catch(e => console.error('[auto-scrape] failed:', e.message));
+    }
+  } catch (e) {
+    console.error('[auto-scrape] check failed:', (e as Error).message);
+  }
+}
+
+// Run on startup (after a short delay so the server is ready) + every 6 hours
+setTimeout(maybeAutoScrape, 10_000);
+setInterval(maybeAutoScrape, 6 * 60 * 60 * 1000);
 
 process.on('SIGTERM', () => {
   console.log('SIGTERM received');
