@@ -6,15 +6,19 @@ dotenv.config();
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const SYSTEM_PROMPT = `You are a precision nutrition assistant that creates practical meal plans using real supermarket products.
+const SYSTEM_PROMPT = `You are a precision nutrition assistant that creates practical weekly meal plans using real supermarket products.
 
-You will receive a list of Lidl supermarket promotions and a user request. Your job is to create a meal plan that:
+You will receive a list of Lidl supermarket promotions and a user request. Create a 7-day meal plan that:
 1. Prioritises discounted products (those with old_price) to save money
 2. Meets the user's calorie target and macros
-3. Uses realistic portions and cooking methods
+3. Uses realistic portions — vary meals across the week, reuse ingredients smartly
 4. Names meals clearly (e.g. "Poulet rôti + légumes vapeur")
 
-CRITICAL: Your entire response must be a single valid JSON object — no markdown, no prose, no code fences:
+CRITICAL RULES:
+- Your entire response must be a single valid JSON object — no markdown, no prose, no code fences
+- Each meal has EXACTLY these fields: name, calories, protein_g, carbs_g, fat_g, ingredients, lidl_products_used
+- DO NOT add a "steps" field — steps are generated separately
+- Keep ingredients concise: max 5 items per meal, each under 6 words
 
 {
   "days": [
@@ -26,21 +30,23 @@ CRITICAL: Your entire response must be a single valid JSON object — no markdow
       "fat_g": 65,
       "meals": [
         {
-          "name": "Meal name",
+          "name": "Poulet rôti + riz",
           "calories": 600,
           "protein_g": 40,
           "carbs_g": 60,
           "fat_g": 15,
-          "ingredients": ["200g chicken breast", "150g rice"],
-          "steps": ["Season chicken, heat pan on high.", "Cook chicken 6 min each side.", "Boil rice 12 min, drain.", "Plate and serve."],
+          "ingredients": ["200g chicken breast", "150g rice", "olive oil"],
           "lidl_products_used": ["Filets de poulet Lidl"]
         }
       ]
     }
   ]
-}
+}`;
 
-For steps: 3–5 concise cooking instructions per meal, each under 12 words.`;
+const STEPS_PROMPT = `You generate concise cooking steps for a single meal.
+Return JSON only — no markdown, no prose:
+{"steps": ["Step 1.", "Step 2.", "Step 3.", "Step 4."]}
+Rules: 4–5 steps, each under 12 words, imperative tense.`;
 
 export interface MenuRequest {
   userId?: string;
@@ -112,7 +118,11 @@ function parseJson<T>(text: string): T {
   } catch {
     const match = text.match(/\{[\s\S]*\}/);
     if (!match) throw new Error(`No JSON found in response: ${text.slice(0, 200)}`);
-    return JSON.parse(match[0]) as T;
+    try {
+      return JSON.parse(match[0]) as T;
+    } catch (e) {
+      throw new Error(`JSON truncated (likely hit max_tokens). Response length: ${text.length} chars. Parser: ${(e as Error).message}`);
+    }
   }
 }
 
@@ -122,45 +132,105 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
   const promos = await fetchLidlPromos();
   const promosText = buildPromosText(promos);
 
-  const days = request.days ?? 7;
+  const numDays = request.days ?? 7;
   const mealsPerDay = request.mealsPerDay ?? 3;
   const targetCalories = request.targetCalories ?? 2000;
 
-  const userRequest = [
-    `Generate a ${days}-day meal plan with ${mealsPerDay} meals per day.`,
-    `Daily calorie target: ${targetCalories} kcal.`,
-    request.preferences ? `Preferences: ${request.preferences}.` : '',
-    request.dietaryRestrictions ? `Dietary restrictions: ${request.dietaryRestrictions}.` : '',
-  ].filter(Boolean).join(' ');
+  const WEEK_DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+  const allDays = WEEK_DAYS.slice(0, numDays);
 
-  const stream = await anthropic.messages.stream({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 5000,
-    system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as any],
-    messages: [{
-      role: 'user',
-      content: [
-        { type: 'text', text: promosText, cache_control: { type: 'ephemeral' } } as any,
-        { type: 'text', text: userRequest },
-      ],
-    }],
+  // 3 days per batch keeps each request well under Sonnet's 8192 token ceiling
+  const batches: string[][] = [];
+  for (let i = 0; i < allDays.length; i += 3) batches.push(allDays.slice(i, i + 3));
+
+  const generateBatch = async (dayNames: string[]): Promise<DayPlan[]> => {
+    const userRequest = [
+      `Generate a meal plan for ONLY these days: ${dayNames.join(', ')}. ${mealsPerDay} meals per day.`,
+      `Daily calorie target: ${targetCalories} kcal.`,
+      request.preferences ? `Preferences: ${request.preferences}.` : '',
+      request.dietaryRestrictions ? `Dietary restrictions: ${request.dietaryRestrictions}.` : '',
+    ].filter(Boolean).join(' ');
+
+    const msg = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 4096,
+      system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as any],
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'text', text: promosText, cache_control: { type: 'ephemeral' } } as any,
+          { type: 'text', text: userRequest },
+        ],
+      }],
+    });
+
+    const rawText = msg.content
+      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+      .map(b => b.text).join('');
+
+    const usage = msg.usage as any;
+    console.log(`Batch [${dayNames.join(',')}]: ${rawText.length} chars, stop=${msg.stop_reason}, tokens=${usage.output_tokens}/4096`);
+
+    return parseJson<MenuPlan>(rawText).days;
+  };
+
+  const start = Date.now();
+  const batchDays = await Promise.all(batches.map(generateBatch));
+  const plan: MenuPlan = { days: batchDays.flat() };
+
+  // Strip steps from every meal and cache them for lazy loading
+  const stepsToCache: Array<{ meal_name: string; steps: string[] }> = [];
+  for (const day of plan.days) {
+    for (const meal of day.meals) {
+      const mealAny = meal as any;
+      if (Array.isArray(mealAny.steps) && mealAny.steps.length) {
+        stepsToCache.push({ meal_name: meal.name, steps: mealAny.steps });
+        delete mealAny.steps;
+      }
+    }
+  }
+  if (stepsToCache.length) {
+    (async () => {
+      try {
+        await supabasePublic.from('meal_steps').upsert(stepsToCache, { onConflict: 'meal_name' });
+        console.log(`Cached steps for ${stepsToCache.length} meals`);
+      } catch {}
+    })();
+  }
+
+  console.log(`Menu done in ${Date.now() - start}ms (${batches.length} parallel batches, ${numDays} days)`);
+  return { plan };
+}
+
+// ─── Steps: DB cache → Haiku fallback ───────────────────────────────────────
+
+export async function generateSteps(mealName: string, ingredients: string[]): Promise<string[]> {
+  const { data: cached } = await supabasePublic
+    .from('meal_steps')
+    .select('steps')
+    .eq('meal_name', mealName)
+    .maybeSingle();
+
+  if (cached?.steps?.length) {
+    console.log(`Steps cache hit: "${mealName}"`);
+    return cached.steps as string[];
+  }
+
+  const ingredientsList = ingredients.length ? `Ingredients: ${ingredients.join(', ')}.` : '';
+  const msg = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 350,
+    system: [{ type: 'text', text: STEPS_PROMPT, cache_control: { type: 'ephemeral' } } as any],
+    messages: [{ role: 'user', content: `Meal: "${mealName}". ${ingredientsList}` }],
   });
 
-  const message = await stream.finalMessage();
-  const rawText = message.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map(b => b.text).join('');
+  const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join('');
+  const { steps } = parseJson<{ steps: string[] }>(text);
 
-  const plan = parseJson<MenuPlan>(rawText);
+  (async () => { try { await supabasePublic.from('meal_steps').insert({ meal_name: mealName, steps }); } catch {} })();
+  console.log(`Steps generated + cached: "${mealName}"`);
 
-  const usage = message.usage as any;
-  const cacheParts: string[] = [];
-  if (usage.cache_creation_input_tokens) cacheParts.push(`${usage.cache_creation_input_tokens} written`);
-  if (usage.cache_read_input_tokens) cacheParts.push(`${usage.cache_read_input_tokens} read`);
-  console.log(`Menu generated. Tokens: ${usage.input_tokens} in / ${usage.output_tokens} out` +
-    (cacheParts.length ? ` | cache: ${cacheParts.join(', ')}` : ''));
-
-  return { plan };
+  return steps;
 }
 
 // ─── Swap a single meal ─────────────────────────────────────────────────────
@@ -267,6 +337,18 @@ export async function getWeekHandler(req: any, res: any) {
   }
 }
 
+export async function stepsHandler(req: any, res: any) {
+  try {
+    const { mealName, ingredients } = req.body;
+    if (!mealName) return res.status(400).json({ error: 'Missing mealName' });
+    const steps = await generateSteps(mealName as string, (ingredients as string[]) ?? []);
+    return res.status(200).json({ steps });
+  } catch (error) {
+    console.error('Steps failed:', error);
+    return res.status(500).json({ error: (error as Error).message });
+  }
+}
+
 export async function swapHandler(req: any, res: any) {
   try {
     const { dayPlan, mealIndex, preferences } = req.body;
@@ -316,7 +398,7 @@ export async function foodScanHandler(req: any, res: any) {
   }
 }
 
-export async function catalogHandler(req: any, res: any) {
+export async function catalogHandler(_req: any, res: any) {
   try {
     const { data, error } = await supabasePublic
       .from('lidl_promos')
