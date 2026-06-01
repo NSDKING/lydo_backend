@@ -55,6 +55,8 @@ export interface MenuRequest {
   mealsPerDay?: number;
   days?: number;
   targetCalories?: number;
+  weeklyBudget?: number;
+  pantryItems?: string[];
 }
 
 export interface Meal {
@@ -147,6 +149,12 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
     const userRequest = [
       `Generate a meal plan for ONLY these days: ${dayNames.join(', ')}. ${mealsPerDay} meals per day.`,
       `Daily calorie target: ${targetCalories} kcal.`,
+      request.weeklyBudget
+        ? `Weekly grocery budget: €${request.weeklyBudget}. Prioritise heavily discounted Lidl products and reuse ingredients across days to stay well under this budget.`
+        : '',
+      request.pantryItems?.length
+        ? `User already has these ingredients at home — use them in meals and do NOT add them to lidl_products_used or ingredients lists (no need to buy): ${request.pantryItems.join(', ')}.`
+        : '',
       request.preferences ? `Preferences: ${request.preferences}.` : '',
       request.dietaryRestrictions ? `Dietary restrictions: ${request.dietaryRestrictions}.` : '',
     ].filter(Boolean).join(' ');
