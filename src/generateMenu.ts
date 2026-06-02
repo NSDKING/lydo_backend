@@ -150,7 +150,7 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
       `Generate a meal plan for ONLY these days: ${dayNames.join(', ')}. ${mealsPerDay} meals per day.`,
       `Daily calorie target: ${targetCalories} kcal.`,
       request.weeklyBudget
-        ? `Weekly grocery budget: €${request.weeklyBudget}. Prioritise heavily discounted Lidl products and reuse ingredients across days to stay well under this budget.`
+        ? `STRICT BUDGET: The total grocery cost for ALL 7 days MUST stay under €${request.weeklyBudget}. That is roughly €${Math.round(request.weeklyBudget / 3)} per meal averaged across the week. Use cheap staples (rice, pasta, eggs, canned legumes, frozen vegetables). Reuse the same protein across multiple days. Avoid expensive items unless heavily discounted.`
         : '',
       request.pantryItems?.length
         ? `User already has these ingredients at home — use them in meals and do NOT add them to lidl_products_used or ingredients lists (no need to buy): ${request.pantryItems.join(', ')}.`
