@@ -43,10 +43,15 @@ CRITICAL RULES:
   ]
 }`;
 
-const STEPS_PROMPT = `You generate concise cooking steps for a single meal.
+const STEPS_PROMPT_EN = `You generate concise cooking steps for a single meal.
 Return JSON only — no markdown, no prose:
 {"steps": ["Step 1.", "Step 2.", "Step 3.", "Step 4."]}
 Rules: 4–5 steps, each under 12 words, imperative tense.`;
+
+const STEPS_PROMPT_FR = `Tu génères des étapes de cuisine concises pour un repas.
+Retourne uniquement du JSON — pas de markdown, pas de texte:
+{"steps": ["Étape 1.", "Étape 2.", "Étape 3.", "Étape 4."]}
+Règles: 4–5 étapes, chacune en moins de 12 mots, mode impératif, en français.`;
 
 export interface MenuRequest {
   userId?: string;
@@ -212,31 +217,34 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
 
 // ─── Steps: DB cache → Haiku fallback ───────────────────────────────────────
 
-export async function generateSteps(mealName: string, ingredients: string[]): Promise<string[]> {
+export async function generateSteps(mealName: string, ingredients: string[], lang = 'en'): Promise<string[]> {
+  const cacheKey = lang === 'fr' ? `${mealName}_fr` : mealName;
+
   const { data: cached } = await supabasePublic
     .from('meal_steps')
     .select('steps')
-    .eq('meal_name', mealName)
+    .eq('meal_name', cacheKey)
     .maybeSingle();
 
   if (cached?.steps?.length) {
-    console.log(`Steps cache hit: "${mealName}"`);
+    console.log(`Steps cache hit: "${cacheKey}"`);
     return cached.steps as string[];
   }
 
+  const prompt = lang === 'fr' ? STEPS_PROMPT_FR : STEPS_PROMPT_EN;
   const ingredientsList = ingredients.length ? `Ingredients: ${ingredients.join(', ')}.` : '';
   const msg = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 350,
-    system: [{ type: 'text', text: STEPS_PROMPT, cache_control: { type: 'ephemeral' } } as any],
+    system: [{ type: 'text', text: prompt, cache_control: { type: 'ephemeral' } } as any],
     messages: [{ role: 'user', content: `Meal: "${mealName}". ${ingredientsList}` }],
   });
 
   const text = msg.content.filter((b): b is Anthropic.TextBlock => b.type === 'text').map(b => b.text).join('');
   const { steps } = parseJson<{ steps: string[] }>(text);
 
-  (async () => { try { await supabasePublic.from('meal_steps').insert({ meal_name: mealName, steps }); } catch {} })();
-  console.log(`Steps generated + cached: "${mealName}"`);
+  (async () => { try { await supabasePublic.from('meal_steps').insert({ meal_name: cacheKey, steps }); } catch {} })();
+  console.log(`Steps generated + cached: "${cacheKey}"`);
 
   return steps;
 }
@@ -375,9 +383,9 @@ export async function getWeekHandler(req: any, res: any) {
 
 export async function stepsHandler(req: any, res: any) {
   try {
-    const { mealName, ingredients } = req.body;
+    const { mealName, ingredients, lang } = req.body;
     if (!mealName) return res.status(400).json({ error: 'Missing mealName' });
-    const steps = await generateSteps(mealName as string, (ingredients as string[]) ?? []);
+    const steps = await generateSteps(mealName as string, (ingredients as string[]) ?? [], (lang as string) ?? 'en');
     return res.status(200).json({ steps });
   } catch (error) {
     console.error('Steps failed:', error);
