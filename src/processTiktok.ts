@@ -45,40 +45,47 @@ async function fetchTiktokMeta(url: string): Promise<{ title: string; descriptio
 
 // ─── Parse recipe from text with Claude ──────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are a recipe extraction assistant. Given the title and description of a TikTok recipe video, extract the recipe details.
-
-Return ONLY valid JSON — no markdown, no prose — matching this exact schema:
+const USER_PROMPT = (title: string, description: string) =>
+  `Extract the recipe from this TikTok video and return ONLY a JSON object with these exact fields:
 {
   "title": "Recipe name",
   "ingredients": ["200g chicken breast", "1 tbsp olive oil"],
-  "steps": ["Step 1 description", "Step 2 description"],
+  "steps": ["Step 1", "Step 2"],
   "macros": { "protein_g": 40, "carbs_g": 50, "fat_g": 15, "calories": 490 },
   "prep_time": "20 min",
   "difficulty": "Easy"
 }
 
 Rules:
-- If ingredients or steps are not in the text, infer them from the recipe name.
-- If macros cannot be calculated exactly, make a reasonable nutritional estimate.
-- difficulty must be "Easy", "Medium", or "Hard".
-- Always return all fields — never omit any.`;
+- If ingredients or steps are missing, infer reasonable ones from the recipe name.
+- Estimate macros if not provided. difficulty = "Easy", "Medium", or "Hard".
+- Never refuse — always return a complete JSON object.
+
+Title: ${title}
+Description: ${description}`;
 
 async function extractRecipeWithClaude(title: string, description: string) {
   const msg = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
     max_tokens: 1024,
     messages: [
-      {
-        role: 'user',
-        content: `${SYSTEM_PROMPT}\n\nTitle: ${title}\nDescription: ${description}`,
-      },
+      { role: 'user', content: USER_PROMPT(title, description) },
+      { role: 'assistant', content: '{' }, // prefill forces JSON output
     ],
   });
 
-  const raw = (msg.content[0] as { type: string; text: string }).text ?? '{}';
-  // Strip any accidental markdown fences
-  const cleaned = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
-  return JSON.parse(cleaned);
+  // Response continues from the prefilled '{'
+  const rest = (msg.content[0] as { type: string; text: string }).text ?? '';
+  const raw = '{' + rest;
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    // Last resort: extract first {...} block from the text
+    const m = raw.match(/\{[\s\S]*\}/);
+    if (m) return JSON.parse(m[0]);
+    throw new Error('Claude did not return valid JSON');
+  }
 }
 
 // ─── Main export ─────────────────────────────────────────────────────────────
