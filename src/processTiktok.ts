@@ -1,12 +1,51 @@
 import dotenv from 'dotenv';
-import OpenAI from 'openai';
-import { chromium } from 'playwright';
+import Anthropic from '@anthropic-ai/sdk';
 
 dotenv.config();
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
-const SYSTEM_PROMPT = `You are a recipe analyst. Given a TikTok recipe video screenshot and page description, extract the recipe details.
+// ─── Extract TikTok metadata via plain HTTP (no browser needed) ───────────────
+
+// TikTok serves og: meta tags in the raw HTML for SEO — no JS rendering required.
+// Short links (vm.tiktok.com) are followed via fetch's redirect handling.
+async function fetchTiktokMeta(url: string): Promise<{ title: string; description: string }> {
+  const MOBILE_UA =
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) ' +
+    'AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+
+  const res = await fetch(url, {
+    headers: {
+      'User-Agent': MOBILE_UA,
+      'Accept': 'text/html,application/xhtml+xml',
+      'Accept-Language': 'en-US,en;q=0.9',
+    },
+    redirect: 'follow',
+  });
+
+  if (!res.ok) throw new Error(`TikTok fetch failed: HTTP ${res.status}`);
+  const html = await res.text();
+
+  const ogTag = (prop: string) => {
+    // Matches both property= and name= variants, single or double quotes
+    const re = new RegExp(
+      `<meta[^>]+(?:property|name)=["']${prop}["'][^>]+content=["']([^"']+)["']`,
+      'i',
+    );
+    const m = html.match(re) ??
+      html.match(new RegExp(`<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${prop}["']`, 'i'));
+    return m ? m[1].replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim() : '';
+  };
+
+  const title = ogTag('og:title') || ogTag('twitter:title') || res.url;
+  const description = ogTag('og:description') || ogTag('twitter:description') || ogTag('description') || title;
+
+  return { title, description };
+}
+
+// ─── Parse recipe from text with Claude ──────────────────────────────────────
+
+const SYSTEM_PROMPT = `You are a recipe extraction assistant. Given the title and description of a TikTok recipe video, extract the recipe details.
 
 Return ONLY valid JSON — no markdown, no prose — matching this exact schema:
 {
@@ -18,69 +57,55 @@ Return ONLY valid JSON — no markdown, no prose — matching this exact schema:
   "difficulty": "Easy"
 }
 
-If you cannot determine a value, make a reasonable estimate. difficulty must be "Easy", "Medium", or "Hard".`;
+Rules:
+- If ingredients or steps are not in the text, infer them from the recipe name.
+- If macros cannot be calculated exactly, make a reasonable nutritional estimate.
+- difficulty must be "Easy", "Medium", or "Hard".
+- Always return all fields — never omit any.`;
 
-export async function processTiktokRecipe(tiktokUrl: string) {
-  const browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+async function extractRecipeWithClaude(title: string, description: string) {
+  const msg = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages: [
+      {
+        role: 'user',
+        content: `${SYSTEM_PROMPT}\n\nTitle: ${title}\nDescription: ${description}`,
+      },
+    ],
   });
 
-  try {
-    const page = await browser.newPage({
-      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-      viewport: { width: 390, height: 844 },
-    });
+  const raw = (msg.content[0] as { type: string; text: string }).text ?? '{}';
+  // Strip any accidental markdown fences
+  const cleaned = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/i, '').trim();
+  return JSON.parse(cleaned);
+}
 
-    await page.goto(tiktokUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForTimeout(2000);
+// ─── Main export ─────────────────────────────────────────────────────────────
 
-    const description = await page
-      .$eval('meta[name="description"]', (el) => (el as HTMLMetaElement).content)
-      .catch(() => '');
-
-    const pageTitle = await page.title().catch(() => '');
-
-    // Viewport screenshot only (smaller than full-page)
-    const screenshotBuffer = await page.screenshot({ fullPage: false });
-    const base64Image = screenshotBuffer.toString('base64');
-
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            {
-              type: 'text',
-              text: `${SYSTEM_PROMPT}\n\nURL: ${tiktokUrl}\nTitle: ${pageTitle}\nDescription: "${description}"`,
-            },
-            {
-              type: 'image_url',
-              image_url: { url: `data:image/png;base64,${base64Image}`, detail: 'low' },
-            },
-          ],
-        },
-      ],
-      response_format: { type: 'json_object' },
-      max_tokens: 1000,
-    });
-
-    const raw = completion.choices[0]?.message?.content ?? '{}';
-    const recipe = JSON.parse(raw);
-
-    return { recipe };
-  } finally {
-    await browser.close();
-  }
+export async function processTiktokRecipe(tiktokUrl: string) {
+  const { title, description } = await fetchTiktokMeta(tiktokUrl);
+  const recipe = await extractRecipeWithClaude(title, description);
+  return { recipe };
 }
 
 export async function handler(req: any, res: any) {
   try {
-    const { tiktokUrl } = req.body;
-    if (!tiktokUrl) return res.status(400).json({ error: 'Missing tiktokUrl' });
+    const { tiktokUrl, title, description } = req.body;
 
-    const result = await processTiktokRecipe(tiktokUrl);
+    let result: { recipe: any };
+
+    if (title && description) {
+      // Client already fetched and parsed the page metadata — go straight to Claude
+      const recipe = await extractRecipeWithClaude(title, description);
+      result = { recipe };
+    } else if (tiktokUrl) {
+      // Legacy path: backend fetches the URL itself (may fail on Railway)
+      result = await processTiktokRecipe(tiktokUrl);
+    } else {
+      return res.status(400).json({ error: 'Provide either {title, description} or {tiktokUrl}' });
+    }
+
     return res.status(200).json(result);
   } catch (error) {
     console.error('TikTok analysis failed:', error);
