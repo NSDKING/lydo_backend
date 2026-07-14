@@ -91,3 +91,60 @@ export async function saveWeeklyPlan(weekKey: string, userId: string | undefined
 
   if (error) throw error;
 }
+
+// -------------------- GENERATION USAGE (fair-use caps) --------------------
+/*
+  Required Supabase migration (run once in SQL editor):
+
+  create table if not exists public.generation_usage (
+    user_id text not null,
+    month_key text not null,
+    generate_count integer not null default 0,
+    swap_count integer not null default 0,
+    updated_at timestamptz default now(),
+    primary key (user_id, month_key)
+  );
+*/
+
+// Generous enough that no normal Pro user notices, tight enough a power user can't
+// burn far more than they paid for in Claude spend.
+const GENERATE_CAP_PER_MONTH = 30; // full 7-day Sonnet plan generations/regenerations
+const SWAP_CAP_PER_MONTH = 200;    // single-meal Haiku swaps
+
+function monthKey(date = new Date()): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+}
+
+export class UsageCapExceededError extends Error {
+  constructor(kind: 'generate' | 'swap') {
+    super(`__usage_cap__:${kind}`);
+  }
+}
+
+async function checkAndIncrementUsage(userId: string, kind: 'generate' | 'swap'): Promise<void> {
+  const key = monthKey();
+  const column = kind === 'generate' ? 'generate_count' : 'swap_count';
+  const cap = kind === 'generate' ? GENERATE_CAP_PER_MONTH : SWAP_CAP_PER_MONTH;
+
+  const { data: existing } = await supabaseAdmin
+    .from('generation_usage')
+    .select(column)
+    .eq('user_id', userId)
+    .eq('month_key', key)
+    .maybeSingle();
+
+  const current = (existing as any)?.[column] ?? 0;
+  if (current >= cap) throw new UsageCapExceededError(kind);
+
+  await supabaseAdmin
+    .from('generation_usage')
+    .upsert({ user_id: userId, month_key: key, [column]: current + 1 }, { onConflict: 'user_id,month_key' });
+}
+
+export async function checkGenerateUsage(userId: string): Promise<void> {
+  return checkAndIncrementUsage(userId, 'generate');
+}
+
+export async function checkSwapUsage(userId: string): Promise<void> {
+  return checkAndIncrementUsage(userId, 'swap');
+}

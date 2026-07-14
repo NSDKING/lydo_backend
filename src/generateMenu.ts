@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import Anthropic from '@anthropic-ai/sdk';
-import { supabasePublic, getWeeklyPlan, saveWeeklyPlan } from './supabaseClient.js';
+import { supabasePublic, getWeeklyPlan, saveWeeklyPlan, checkGenerateUsage, checkSwapUsage, UsageCapExceededError } from './supabaseClient.js';
 
 dotenv.config();
 
@@ -62,6 +62,7 @@ export interface MenuRequest {
   targetCalories?: number;
   weeklyBudget?: number;
   pantryItems?: string[];
+  teaserDay?: string;
 }
 
 export interface Meal {
@@ -215,6 +216,46 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
   return { plan };
 }
 
+// ─── Free-tier teaser: single day, Haiku ────────────────────────────────────
+// Never spend a Sonnet weekly plan on a user who hasn't converted — the onboarding
+// reveal and locked-week paywall both run on this cheap single-day preview instead.
+
+export async function generateMenuTeaser(request: MenuRequest): Promise<{ plan: MenuPlan }> {
+  const promos = await fetchLidlPromos();
+  const promosText = buildPromosText(promos);
+
+  const mealsPerDay = request.mealsPerDay ?? 3;
+  const targetCalories = request.targetCalories ?? 2000;
+  const dayName = request.teaserDay ?? 'Monday';
+
+  const userRequest = [
+    `Generate a meal plan for ONLY this day: ${dayName}. ${mealsPerDay} meals per day.`,
+    `Daily calorie target: ${targetCalories} kcal.`,
+    request.preferences ? `Preferences: ${request.preferences}.` : '',
+    request.dietaryRestrictions ? `Dietary restrictions: ${request.dietaryRestrictions}.` : '',
+  ].filter(Boolean).join(' ');
+
+  const msg = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1400,
+    system: [{ type: 'text', text: SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } } as any],
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: promosText, cache_control: { type: 'ephemeral' } } as any,
+        { type: 'text', text: userRequest },
+      ],
+    }],
+  });
+
+  const rawText = msg.content
+    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
+    .map(b => b.text).join('');
+
+  const { days } = parseJson<MenuPlan>(rawText);
+  return { plan: { days: days.slice(0, 1) } };
+}
+
 // ─── Steps: DB cache → Haiku fallback ───────────────────────────────────────
 
 export async function generateSteps(mealName: string, ingredients: string[], lang = 'en'): Promise<string[]> {
@@ -322,6 +363,16 @@ Return JSON only:
 
 // ─── Route handlers ──────────────────────────────────────────────────────────
 
+export async function teaserHandler(req: any, res: any) {
+  try {
+    const { plan } = await generateMenuTeaser(req.body as MenuRequest);
+    return res.status(200).json({ plan });
+  } catch (error) {
+    console.error('Teaser generation failed:', error);
+    return res.status(500).json({ error: (error as Error).message });
+  }
+}
+
 export async function handler(req: any, res: any) {
   try {
     const weekKey = getWeekKey();
@@ -342,6 +393,15 @@ export async function handler(req: any, res: any) {
           console.log(`Cache hit for user ${body.userId} week ${weekKey} — skipping generation`);
           return res.status(200).json({ plan, weekKey, cached: true });
         } catch { /* corrupted entry — fall through to regenerate */ }
+      }
+
+      try {
+        await checkGenerateUsage(body.userId);
+      } catch (e) {
+        if (e instanceof UsageCapExceededError) {
+          return res.status(429).json({ error: 'Monthly plan generation limit reached. It resets next month.' });
+        }
+        throw e;
       }
     }
 
@@ -395,8 +455,20 @@ export async function stepsHandler(req: any, res: any) {
 
 export async function swapHandler(req: any, res: any) {
   try {
-    const { dayPlan, mealIndex, preferences } = req.body;
+    const { dayPlan, mealIndex, preferences, userId } = req.body;
     if (!dayPlan || mealIndex === undefined) return res.status(400).json({ error: 'Missing dayPlan or mealIndex' });
+
+    if (userId) {
+      try {
+        await checkSwapUsage(userId);
+      } catch (e) {
+        if (e instanceof UsageCapExceededError) {
+          return res.status(429).json({ error: 'Monthly meal-swap limit reached. It resets next month.' });
+        }
+        throw e;
+      }
+    }
+
     const meal = await swapSingleMeal(dayPlan as DayPlan, mealIndex as number, preferences as string | undefined);
     return res.status(200).json({ meal });
   } catch (error) {

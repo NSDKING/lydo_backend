@@ -2,7 +2,7 @@ import './wsPolyfill.js';
  
 import express, { Request, Response } from 'express';
 
-import { handler as menuHandler, getWeekHandler, clearWeekHandler, swapHandler, stepsHandler, adaptHandler, catalogHandler, foodScanHandler } from './generateMenu.js';
+import { handler as menuHandler, getWeekHandler, clearWeekHandler, swapHandler, stepsHandler, adaptHandler, catalogHandler, foodScanHandler, teaserHandler } from './generateMenu.js';
 import { handler as tiktokHandler } from './processTiktok.js';
 import { handler as lidlHandler } from './scrapeLidlPromo.js';
 import { handler as fullCatalogHandler, scrapeFullCatalog } from './scrapeFullCatalog.js';
@@ -56,6 +56,7 @@ app.post('/lidl/scrape-catalog', fullCatalogHandler);
 app.get('/menu/week/:key', getWeekHandler);
 app.post('/menu/clear', clearWeekHandler);
 app.post('/menu/generate', menuHandler);
+app.post('/menu/teaser', teaserHandler);
 app.post('/menu/swap', swapHandler);
 app.post('/meal/steps', stepsHandler);
 app.post('/recipe/adapt', adaptHandler);
