@@ -63,6 +63,7 @@ export interface MenuRequest {
   weeklyBudget?: number;
   pantryItems?: string[];
   teaserDay?: string;
+  mealRatingsSummary?: string;
 }
 
 export interface Meal {
@@ -163,6 +164,7 @@ export async function generateMenu(request: MenuRequest): Promise<{ plan: MenuPl
         : '',
       request.preferences ? `Preferences: ${request.preferences}.` : '',
       request.dietaryRestrictions ? `Dietary restrictions: ${request.dietaryRestrictions}.` : '',
+      request.mealRatingsSummary ?? '',
     ].filter(Boolean).join(' ');
 
     const msg = await anthropic.messages.create({
@@ -363,9 +365,40 @@ Return JSON only:
 
 // ─── Route handlers ──────────────────────────────────────────────────────────
 
+// Teasers are cached under a namespaced key ("<weekKey>-teaser-<day>", distinct
+// from the plain weekKey full-plan rows) in the same weekly_plans table — one
+// Haiku call per user per day, not per app open.
 export async function teaserHandler(req: any, res: any) {
   try {
-    const { plan } = await generateMenuTeaser(req.body as MenuRequest);
+    const body = req.body as MenuRequest;
+    const day = body.teaserDay ?? 'Monday';
+    const teaserKey = `${getWeekKey()}-teaser-${day}`;
+
+    if (body.userId) {
+      const { data: existing } = await supabasePublic
+        .from('weekly_plans')
+        .select('plan_text')
+        .eq('week_key', teaserKey)
+        .eq('user_id', body.userId)
+        .maybeSingle();
+
+      if (existing?.plan_text) {
+        try {
+          const plan = JSON.parse(existing.plan_text);
+          console.log(`Teaser cache hit for user ${body.userId} (${teaserKey})`);
+          return res.status(200).json({ plan, cached: true });
+        } catch { /* corrupted entry — fall through to regenerate */ }
+      }
+    }
+
+    const { plan } = await generateMenuTeaser(body);
+
+    if (body.userId) {
+      saveWeeklyPlan(teaserKey, body.userId, plan as any).catch(e =>
+        console.warn('Failed to cache teaser plan:', (e as Error).message)
+      );
+    }
+
     return res.status(200).json({ plan });
   } catch (error) {
     console.error('Teaser generation failed:', error);
