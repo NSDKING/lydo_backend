@@ -16,5 +16,6 @@
     "resolveJsonModule": true,
     "noImplicitAny": false
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "exclude": ["src/debugScrape.ts", "src/testMenu.ts", "src/testScrape.ts"]
 }
