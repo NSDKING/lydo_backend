@@ -148,3 +148,21 @@ export async function checkGenerateUsage(userId: string): Promise<void> {
 export async function checkSwapUsage(userId: string): Promise<void> {
   return checkAndIncrementUsage(userId, 'swap');
 }
+
+// -------------------- ACCOUNT DELETION (Guideline 5.1.1v) --------------------
+// Best-effort cleanup of every user-owned table, then remove the actual auth
+// identity last — that final step is the one that must not silently fail.
+const USER_ID_TABLES = ['user_profiles', 'user_grocery_state', 'meal_ratings', 'weekly_plans', 'user_recipes', 'generation_usage'];
+
+export async function deleteUserAccount(userId: string): Promise<void> {
+  for (const table of USER_ID_TABLES) {
+    const { error } = await supabaseAdmin.from(table).delete().eq('user_id', userId);
+    if (error) console.warn(`Account deletion: failed to clear ${table} for ${userId}:`, error.message);
+  }
+
+  const { error: usersError } = await supabaseAdmin.from('users').delete().eq('id', userId);
+  if (usersError) console.warn(`Account deletion: failed to clear users row for ${userId}:`, usersError.message);
+
+  const { error: authError } = await supabaseAdmin.auth.admin.deleteUser(userId);
+  if (authError) throw authError;
+}

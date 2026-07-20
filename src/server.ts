@@ -7,7 +7,8 @@ import { handler as tiktokHandler } from './processTiktok.js';
 import { handler as lidlHandler } from './scrapeLidlPromo.js';
 import { handler as fullCatalogHandler, scrapeFullCatalog } from './scrapeFullCatalog.js';
 
-import { saveUserData, supabasePublic } from './supabaseClient.js';
+import { saveUserData, supabasePublic, deleteUserAccount } from './supabaseClient.js';
+import { termsHandler, privacyHandler } from './legal.js';
 
 const app = express();
 
@@ -22,6 +23,9 @@ app.get('/', (_req, res) => {
 app.get('/health', (_req, res) => {
   res.status(200).send('OK');
 });
+
+app.get('/legal/terms', termsHandler);
+app.get('/legal/privacy', privacyHandler);
 
 app.use(express.json({ limit: '10mb' }));
 
@@ -46,6 +50,18 @@ app.post('/user-data', async (req: Request, res: Response) => {
     return res.status(500).json({
       error: (error as Error).message
     });
+  }
+});
+
+app.post('/account/delete', async (req: Request, res: Response) => {
+  try {
+    const { userId } = req.body;
+    if (!userId) return res.status(400).json({ error: 'Missing userId' });
+    await deleteUserAccount(userId);
+    return res.status(200).json({ deleted: true });
+  } catch (error) {
+    console.error('Account deletion failed:', error);
+    return res.status(500).json({ error: (error as Error).message });
   }
 });
 
