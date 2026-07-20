@@ -8,7 +8,7 @@ import { handler as lidlHandler } from './scrapeLidlPromo.js';
 import { handler as fullCatalogHandler, scrapeFullCatalog } from './scrapeFullCatalog.js';
 
 import { saveUserData, supabasePublic, deleteUserAccount } from './supabaseClient.js';
-import { termsHandler, privacyHandler } from './legal.js';
+import { termsHandler, privacyHandler, supportHandler } from './legal.js';
 
 const app = express();
 
@@ -26,6 +26,7 @@ app.get('/health', (_req, res) => {
 
 app.get('/legal/terms', termsHandler);
 app.get('/legal/privacy', privacyHandler);
+app.get('/support', supportHandler);
 
 app.use(express.json({ limit: '10mb' }));
 

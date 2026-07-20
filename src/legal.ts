@@ -60,6 +60,17 @@ export function termsHandler(_req: any, res: any) {
 `));
 }
 
+export function supportHandler(_req: any, res: any) {
+  res.status(200).type('html').send(page('Support', `
+<p>Need help with ${APP_NAME}, or have a question, bug report, or feedback? Reach out and we'll get back to you.</p>
+<p>Email: <a href="mailto:${CONTACT_EMAIL}">${CONTACT_EMAIL}</a></p>
+<h2>Account &amp; data</h2>
+<p>You can delete your account and all associated data at any time from the app: Profile → Delete Account.</p>
+<h2>Legal</h2>
+<p><a href="/legal/terms">Terms of Use</a> · <a href="/legal/privacy">Privacy Policy</a></p>
+`));
+}
+
 export function privacyHandler(_req: any, res: any) {
   res.status(200).type('html').send(page('Privacy Policy', `
 <p>This Privacy Policy explains what data ${APP_NAME} (the "App") collects, why, and how it's handled. The App is provided by ${DEVELOPER} ("we", "us").</p>
